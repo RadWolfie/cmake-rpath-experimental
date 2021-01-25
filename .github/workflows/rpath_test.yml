@@ -1,0 +1,114 @@
+name: RPATH Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} (${{ matrix.arch }}, ${{ matrix.configuration }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        cmake-generator:
+          # x64 arch
+          - ${{ '"Visual Studio 16 2019" -A x64' }}
+          - ${{ '"Unix Makefiles"' }}
+          - Xcode
+        configuration: [Release]
+        include:
+          - cmake-generator: ${{ '"Visual Studio 16 2019" -A x64' }}
+            platform: Windows
+            os: windows-latest
+            arch: x64
+            cmake-build-param: -j $(nproc --all)
+            folder: win
+          - cmake-generator: ${{ '"Unix Makefiles"' }}
+            platform: Linux
+            os: ubuntu-latest
+            arch: x64
+            cmake-build-param: -j $(nproc --all)
+            folder: linux
+            rpath_verbose: objdump -x cmake_bin |grep -E "RPATH|RUNPATH"
+          - cmake-generator: Xcode
+            platform: macOS
+            os: macos-latest
+            arch: x64
+            cmake-build-param: -j $(sysctl -n hw.ncpu)
+            folder: macos
+            compile_dir: '/Release'
+            rpath_verbose: otool -l cmake_bin | grep LC_RPATH -A2
+    steps:
+      - uses: actions/checkout@v2
+      - name: Generate CMake Files
+        # NOTES:
+        # -Werror=dev is used to validate CMakeLists.txt for any faults.
+        run: |
+          mkdir build && cd build
+          cmake .. -Werror=dev -G ${{ matrix.cmake-generator }}
+      - name: Build (RPATH ON)
+        working-directory: build
+        run: cmake --build . --config ${{ matrix.configuration }} ${{ matrix.cmake-build-param }}
+      - name: Verbose Build RPATH (ON)
+        if: matrix.rpath_verbose != null
+        working-directory: build${{matrix.compile_dir}}
+        run: ${{matrix.rpath_verbose}}
+      - name: Install Files (RPATH ON)
+        working-directory: build
+        run: cmake --install . --config ${{ matrix.configuration }} --prefix ../rpath_on/${{ matrix.folder }}_${{ matrix.arch }}
+      - name: Verbose Install RPATH (ON)
+        if: matrix.rpath_verbose != null
+        working-directory: rpath_on/${{ matrix.folder }}_${{ matrix.arch }}
+        run: ${{matrix.rpath_verbose}}
+      - name: Run Installed Program Test (RPATH ON)
+        working-directory: rpath_on/${{ matrix.folder }}_${{ matrix.arch }}
+        run: ./cmake_bin
+      - name: Build (RPATH OFF)
+        working-directory: build
+        run: cmake . -DCMAKE_SKIP_RPATH=ON && cmake --build . --config ${{ matrix.configuration }} ${{ matrix.cmake-build-param }}
+      - name: Verbose Build RPATH (OFF)
+        if: matrix.rpath_verbose != null
+        working-directory: build${{matrix.compile_dir}}
+        run: ${{matrix.rpath_verbose}}
+        continue-on-error: true
+        id: f1
+      - name: 'Expect RPATH OFF Failure #1'
+        if: steps.f1.outcome == 'failure'
+        run: exit 0
+      - name: Install Files (RPATH OFF)
+        working-directory: build
+        run: cmake --install . --config ${{ matrix.configuration }} --prefix ../rpath_off/${{ matrix.folder }}_${{ matrix.arch }}
+      - name: Verbose Install RPATH (OFF)
+        if: matrix.rpath_verbose != null
+        working-directory: rpath_off/${{ matrix.folder }}_${{ matrix.arch }}
+        run: ${{matrix.rpath_verbose}}
+        continue-on-error: true
+        id: f2
+      - name: 'Expect RPATH OFF Failure #2'
+        if: steps.f2.outcome == 'failure'
+        run: exit 0
+      - name: Run Installed Program Test (RPATH OFF)
+        working-directory: rpath_off/${{ matrix.folder }}_${{ matrix.arch }}
+        run: ./cmake_bin
+        continue-on-error: true
+        id: f3
+      - name: 'Expect RPATH OFF Failure #3'
+        if: steps.f3.outcome == 'failure'
+        run: exit 0
+      - name: Upload Build Artifact (RPATH ON)
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v2
+        with:
+          name: rpath_on
+          path: rpath_on/*/*
+          if-no-files-found: error
+      - name: Upload Build Artifact (RPATH OFF)
+        if: matrix.configuration == 'Release'
+        uses: actions/upload-artifact@v2
+        with:
+          name: rpath_off
+          path: rpath_off/*/*
+          if-no-files-found: error
